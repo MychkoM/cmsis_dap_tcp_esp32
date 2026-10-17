@@ -66,7 +66,17 @@
         "SDKCONFIG": "build/build_xiao_esp32c6_alt/sdkconfig",
         "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.board_xiao_esp32c6_alt"
       }
+    },
+    {
+      "name": "board_esp32c3_oled_042",
+      "displayName": "ESP32-C3 development board with 0.42 inch OLED",
+      "description": "SWD/UART with GPIO4/5 reserved for external INA219; onboard OLED inactive",
+      "binaryDir": "build/build_esp32c3_oled_042",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32c3",
+        "SDKCONFIG": "build/build_esp32c3_oled_042/sdkconfig",
+        "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.board_esp32c3_oled_042"
+      }
     }
   ]
 }
-

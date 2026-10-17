@@ -29,6 +29,10 @@
 #include "uart_bridge.h"
 #include "reboot.h"
 
+#ifdef CONFIG_ESP_INA219_ENABLED
+#include "ina219.h"
+#endif
+
 #ifdef CONFIG_ESP_ADC_STREAM_ENABLED
 #include "adc_stream.h"
 #include "soc/soc_caps.h"
@@ -414,6 +418,20 @@ static int adc_cmd_handler(void *context, int argc, char **argv)
 }
 #endif
 
+#ifdef CONFIG_ESP_INA219_ENABLED
+static int ina219_cmd_handler(void *context, int argc, char **argv)
+{
+    struct command_context *ctx = context;
+    if (argc == 2 && strcmp(argv[1], "scan") == 0)
+        return ina219_scan(ctx->out) == ESP_OK ? 0 : 1;
+    if (argc != 1) {
+        fprintf(ctx->out, "Usage: ina219 [scan]\n");
+        return 1;
+    }
+    return ina219_print_sample(ctx->out) == ESP_OK ? 0 : 1;
+}
+#endif
+
 static int reboot_cmd_handler(void *context, int argc, char **argv)
 {
     struct command_context *ctx = context;
@@ -532,6 +550,9 @@ static int help_cmd_handler(void *context, int argc, char **argv)
     fprintf(out, "  adc <gpio> <output_sps> <averaging> <format> - Configure "
            "ADC streaming settings.\n");
 #endif
+#ifdef CONFIG_ESP_INA219_ENABLED
+    fprintf(out, "  ina219 [scan] - Read bus voltage, signed current and power (JSON).\n");
+#endif
     fprintf(out, "  reboot - Restart the device.\n");
     fprintf(out, "  status - Report network status.\n");
     return 0;
@@ -596,6 +617,9 @@ static const struct {
     const char *name;
     int (*func)(void *context, int argc, char **argv);
 } socket_commands[] = {
+#ifdef CONFIG_ESP_INA219_ENABLED
+    { "ina219", ina219_cmd_handler },
+#endif
 #ifdef CONFIG_ESP_ADC_STREAM_ENABLED
     { "adc",    adc_cmd_handler },
 #endif
@@ -855,6 +879,16 @@ void commands_init_serial(void)
         .context = ctx,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&adc_cmd));
+#endif
+
+#ifdef CONFIG_ESP_INA219_ENABLED
+    const esp_console_cmd_t ina219_cmd = {
+        .command = "ina219",
+        .help = "Read INA219 bus voltage, signed current and power as JSON",
+        .func_w_context = ina219_cmd_handler,
+        .context = ctx,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&ina219_cmd));
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));

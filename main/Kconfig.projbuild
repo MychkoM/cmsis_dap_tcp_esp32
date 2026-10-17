@@ -819,6 +819,38 @@ menu "CMSIS-DAP configuration"
 
     endmenu
 
+    menu "INA219 power monitor"
+        config ESP_INA219_ENABLED
+            bool "Enable INA219 USB/TCP console measurements"
+            default n
+            help
+                Enables the ina219 command. Uses a dedicated I2C bus.
+                Reserve both pins exclusively for the sensor. The OLED on
+                the ESP32-C3 0.42 inch board shares GPIO5 and stays inactive.
+
+        if ESP_INA219_ENABLED
+            config ESP_INA219_SDA_PIN
+                int "SDA GPIO"
+                default 4
+                range 0 48
+            config ESP_INA219_SCL_PIN
+                int "SCL GPIO"
+                default 5
+                range 0 48
+            config ESP_INA219_ADDRESS
+                hex "7-bit I2C address"
+                default 0x40
+                range 0x40 0x4f
+            config ESP_INA219_SHUNT_MILLIOHMS
+                int "Physical shunt resistance (milliohms)"
+                default 100
+                range 1 10000
+                help
+                    Standard MCU-219 modules with an R100 shunt use 100.
+                    Set this to the fitted shunt for correct current/power.
+        endif
+    endmenu
+
     menu "ADC streaming"
 
         config ESP_ADC_STREAM_ENABLED

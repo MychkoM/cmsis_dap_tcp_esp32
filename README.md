@@ -63,6 +63,87 @@ modified to support the ESP32 GPIO.
 commit 1fd47bed772ea40923472c90dfe11516e76033ee (HEAD -> main, tag: v2.1.2, origin/main, origin/HEAD)
 ```
 
+## ESP32-C3 development board with 0.42 inch OLED
+
+Use `IDF_PRESET=board_esp32c3_oled_042`. This preset targets the 4 MB
+ESP32-C3 board with onboard OLED SDA=GPIO5 and SCL=GPIO6.
+
+| Function | GPIO / port |
+|---|---|
+| SWD clock | GPIO0 |
+| SWD data | GPIO1 |
+| Target reset (active low) | GPIO2 |
+| UART1 TX / RX | GPIO21 / GPIO20, 115200 8N1 |
+| INA219 SDA / SCL | GPIO4 / GPIO5 |
+| TCP console / CMSIS-DAP / UART | 4440 / 4441 / 4442 |
+
+JTAG and activity LED are disabled. GPIO8/9 are boot strapping pins and
+are left unused. GPIO18/19 remain available for native USB Serial/JTAG.
+The onboard OLED is inactive: GPIO5 is reserved for the external INA219
+clock and GPIO6 must remain undriven. This wiring cannot simultaneously
+operate the OLED with its stock I2C connections.
+
+Build with the existing local Podman image (start Podman first):
+
+```sh
+./host/build_oled_podman.sh
+```
+
+The esp-matter image entrypoint changes directory, so the script explicitly
+returns to `/project` before invoking ESP-IDF. Build artifacts and the
+machine-specific sdkconfig are under `build/build_esp32c3_oled_042/`.
+Flash via the host's esptool and `/dev/cu.usbmodem1101` on macOS; the Linux
+Podman VM does not directly expose that host serial device. Use the offsets
+and flash settings in the generated `flasher_args.json`. With esptool installed:
+
+```sh
+python3 host/flash_firmware.py --port /dev/cu.usbmodem1101
+```
+
+Configure Wi-Fi
+through the USB console with `wifi "<ssid>" "<password>" wpa2`, then `reboot`.
+Credentials are stored in NVS rather than in the board preset or Git.
+
+After obtaining the IP from USB console:
+
+```sh
+python3 host/check_wifi.py <device-ip> --ina219 10
+nc <device-ip> 4440
+# At the esp32> prompt:
+ina219
+# Scan I2C addresses on the configured pins if a measurement fails:
+ina219 scan
+```
+
+The check validates framed CMSIS-DAP requests, SWD adapter connect/disconnect,
+and UART TCP transmission using the firmware's byte counters. Physical UART
+RX and target SWD memory accesses require external hardware and are outside
+this check.
+
+### INA219 current and power monitor
+
+The optional `CONFIG_ESP_INA219_ENABLED` module adds `ina219` to both USB and
+TCP console help. `ina219 scan` lists responding I2C addresses on the configured
+pins. Each measurement command triggers a fresh bus+shunt conversion and
+returns one JSON record with `bus_voltage_v`, `shunt_voltage_mv`, signed
+`current_ma`, and signed `power_mw` (bus voltage times current).
+Simultaneous console clients are serialized. I2C, conversion timeout,
+configuration readback and overflow failures produce an explicit error
+instead of a zero reading.
+
+The preset uses 100 kHz I2C, address `0x40`, SDA=GPIO4 and SCL=GPIO5.
+Connect sensor VCC to 3V3 and GND to GND, with I2C pull-ups to 3V3.
+`CONFIG_ESP_INA219_SHUNT_MILLIOHMS=100` assumes an **R100 (0.1 ohm)** shunt;
+change it if the fitted resistor differs. Address and pins are configurable
+in menuconfig. The sensor supply voltage is separate from the voltage at
+VIN-/the load: an unconnected load input may float, so an idle reading does
+not validate accuracy under load.
+
+Register scales and triggered conversion settings follow the
+[TI INA219 datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf).
+Current is calculated from signed shunt voltage and the physical resistor;
+the INA219 calibration/current/power registers are not used.
+
 # Limitations
 
 The software has some limitations:
