@@ -139,6 +139,52 @@ in menuconfig. The sensor supply voltage is separate from the voltage at
 VIN-/the load: an unconnected load input may float, so an idle reading does
 not validate accuracy under load.
 
+The standalone firmware starts background sampling every 50 ms, even when no
+console is connected. By default it averages samples over **1000 ms** and
+keeps the **200 most recent completed intervals** in a RAM ring buffer.
+Configure and read it from either the USB or TCP console:
+
+```text
+ina219 interval 1000    # Set the averaging interval to 1 second
+ina219 interval         # Show current interval and buffered count
+ina219 history          # Read all retained records, oldest first
+ina219 history 10       # Read the 10 newest records, oldest first
+```
+
+Intervals are specified in milliseconds, from 100 to 3600000. Changing the
+interval starts a new window immediately and discards the incomplete window;
+completed records remain. The setting and history reset on reboot. Reading
+is non-destructive; once full, each new record overwrites the oldest.
+
+Output is newline-delimited JSON: a history header followed by one object per
+interval. Each record includes `sequence`, `start_ms`, `end_ms`, `interval_ms`,
+`timestamp_ms` (actual write time), `samples`, `errors`, and mean voltage,
+shunt voltage, current and power. All times are **milliseconds since boot**,
+not UTC. Power is the mean of individual signed power measurements, rather
+than the product of mean voltage and mean current. Windows are half-open
+`[start_ms, end_ms)`; samples are assigned by conversion completion time.
+
+Only successful background measurements contribute to the arithmetic mean;
+failed attempts increment `errors`. Empty windows contain `samples:0` and
+`null` measurement fields. Manual measurements and I2C scans serialize with
+the sampler and may reduce sampling coverage; `samples` exposes this. Buffer
+reads use a snapshot and do not block sampling while sending output. Projects
+using this as a component can call `ina219_monitor_start()` after startup to
+enable the same collector.
+
+Verification helpers:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -I main main/ina219_history.c \
+  tests/test_ina219_history.c -o /tmp/test_ina219_history
+/tmp/test_ina219_history
+python3 host/check_ina219_history.py <device-ip>
+```
+
+The hardware test temporarily uses a 100 ms interval to fill and overwrite
+all 200 slots, checks invalid inputs and non-destructive reads, and restores
+the original interval on exit. It replaces the previously buffered history.
+
 Register scales and triggered conversion settings follow the
 [TI INA219 datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf).
 Current is calculated from signed shunt voltage and the physical resistor;

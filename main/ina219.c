@@ -1,6 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "sdkconfig.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <inttypes.h>
+#include "esp_timer.h"
+#include "ina219_history.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -74,7 +78,7 @@ static bool take_lock(void)
 esp_err_t ina219_scan(FILE *out)
 {
     if (!take_lock()) {
-        fprintf(out, "INA219 error: busy\n");
+        if (out) fprintf(out, "INA219 error: busy\n");
         return ESP_ERR_TIMEOUT;
     }
     esp_err_t err = init_device();
@@ -96,10 +100,10 @@ esp_err_t ina219_scan(FILE *out)
     return err;
 }
 
-esp_err_t ina219_print_sample(FILE *out)
+static esp_err_t read_sample(struct ina219_sample *sample, FILE *out)
 {
     if (!take_lock()) {
-        fprintf(out, "INA219 error: busy\n");
+        if (out) fprintf(out, "INA219 error: busy\n");
         return ESP_ERR_TIMEOUT;
     }
     esp_err_t err;
@@ -138,16 +142,140 @@ esp_err_t ina219_print_sample(FILE *out)
         double voltage = (bus_raw >> 3) * 0.004;
         double shunt_mv = (int16_t)shunt_raw * 0.01;
         double current_ma = shunt_mv * 1000.0 / CONFIG_ESP_INA219_SHUNT_MILLIOHMS;
-        fprintf(out, "{\"sensor\":\"INA219\",\"address\":%d,\"bus_voltage_v\":%.3f,"
-                "\"shunt_voltage_mv\":%.3f,\"current_ma\":%.3f,\"power_mw\":%.3f,"
-                "\"shunt_milliohms\":%d}\n",
-                CONFIG_ESP_INA219_ADDRESS, voltage, shunt_mv, current_ma,
-                voltage * current_ma, CONFIG_ESP_INA219_SHUNT_MILLIOHMS);
-    } else {
+        *sample = (struct ina219_sample) {voltage, shunt_mv, current_ma,
+                                         voltage * current_ma};
+    } else if (out) {
         fprintf(out, "INA219 error: %s (stage=%s config=0x%04x address=0x%02x SDA=%d SCL=%d)\n",
                 esp_err_to_name(err), stage, config, CONFIG_ESP_INA219_ADDRESS,
                 CONFIG_ESP_INA219_SDA_PIN, CONFIG_ESP_INA219_SCL_PIN);
     }
     xSemaphoreGive(lock);
     return err;
+}
+
+esp_err_t ina219_print_sample(FILE *out)
+{
+    struct ina219_sample s;
+    esp_err_t err = read_sample(&s, out);
+    if (err == ESP_OK)
+        fprintf(out, "{\"sensor\":\"INA219\",\"address\":%d,\"bus_voltage_v\":%.3f,"
+                "\"shunt_voltage_mv\":%.3f,\"current_ma\":%.3f,\"power_mw\":%.3f,"
+                "\"shunt_milliohms\":%d}\n",
+                CONFIG_ESP_INA219_ADDRESS, s.voltage_v, s.shunt_mv, s.current_ma,
+                s.power_mw, CONFIG_ESP_INA219_SHUNT_MILLIOHMS);
+    return err;
+}
+
+static struct ina219_history history;
+static StaticSemaphore_t history_lock_storage;
+static SemaphoreHandle_t history_lock;
+static uint32_t interval_generation;
+static bool monitor_running;
+
+static uint64_t uptime_ms(void)
+{
+    return (uint64_t)esp_timer_get_time() / 1000;
+}
+
+static void monitor_task(void *arg)
+{
+    TickType_t wake = xTaskGetTickCount();
+    for (;;) {
+        xSemaphoreTake(history_lock, portMAX_DELAY);
+        uint32_t generation = interval_generation;
+        ina219_history_advance(&history, uptime_ms());
+        xSemaphoreGive(history_lock);
+
+        struct ina219_sample s;
+        esp_err_t err = read_sample(&s, NULL);
+        xSemaphoreTake(history_lock, portMAX_DELAY);
+        /* A conversion already in flight when the interval changes is dropped. */
+        if (generation == interval_generation)
+            ina219_history_add(&history, uptime_ms(), err == ESP_OK ? &s : NULL);
+        xSemaphoreGive(history_lock);
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
+    }
+}
+
+esp_err_t ina219_monitor_start(void)
+{
+    /* Called once at startup, before USB/TCP consoles become available. */
+    if (monitor_running)
+        return ESP_OK;
+    history_lock = xSemaphoreCreateMutexStatic(&history_lock_storage);
+    if (!history_lock)
+        return ESP_ERR_NO_MEM;
+    ina219_history_set_interval(&history, 1000, uptime_ms());
+    if (xTaskCreate(monitor_task, "ina219_monitor", 4096, NULL, 3, NULL) != pdPASS)
+        return ESP_ERR_NO_MEM;
+    monitor_running = true;
+    return ESP_OK;
+}
+
+esp_err_t ina219_set_interval(uint32_t interval_ms)
+{
+    if (!monitor_running)
+        return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(history_lock, portMAX_DELAY);
+    bool valid = ina219_history_set_interval(&history, interval_ms, uptime_ms());
+    if (valid)
+        ++interval_generation;
+    xSemaphoreGive(history_lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t ina219_print_interval(FILE *out)
+{
+    if (!monitor_running) {
+        fprintf(out, "INA219 monitor is not running\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(history_lock, portMAX_DELAY);
+    uint32_t interval_ms = history.interval_ms;
+    size_t count = history.count;
+    xSemaphoreGive(history_lock);
+    fprintf(out, "{\"type\":\"ina219_interval\",\"interval_ms\":%" PRIu32
+            ",\"sample_period_ms\":50,\"count\":%u,\"capacity\":200,"
+            "\"timebase\":\"uptime_ms\"}\n", interval_ms, (unsigned)count);
+    return ESP_OK;
+}
+
+esp_err_t ina219_print_history(FILE *out, unsigned limit)
+{
+    if (!monitor_running) {
+        fprintf(out, "INA219 monitor is not running\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!limit || limit > INA219_HISTORY_CAPACITY)
+        return ESP_ERR_INVALID_ARG;
+    /* Snapshot under the history lock; never hold a lock while writing TCP. */
+    struct ina219_average *rows = calloc(limit, sizeof(*rows));
+    if (!rows) {
+        fprintf(out, "INA219 history error: out of memory\n");
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(history_lock, portMAX_DELAY);
+    size_t count = ina219_history_copy(&history, rows, limit);
+    xSemaphoreGive(history_lock);
+    fprintf(out, "{\"type\":\"ina219_history\",\"count\":%u,\"capacity\":200,"
+            "\"timebase\":\"uptime_ms\"}\n", (unsigned)count);
+    for (size_t i = 0; i < count; ++i) {
+        const struct ina219_average *r = &rows[i];
+        fprintf(out, "{\"type\":\"ina219_average\",\"sequence\":%" PRIu64
+                ",\"timestamp_ms\":%" PRIu64 ",\"start_ms\":%" PRIu64
+                ",\"end_ms\":%" PRIu64 ",\"interval_ms\":%" PRIu32
+                ",\"samples\":%" PRIu32 ",\"errors\":%" PRIu32 ",",
+                r->sequence, r->timestamp_ms, r->start_ms, r->end_ms,
+                r->interval_ms, r->samples, r->errors);
+        if (r->samples)
+            fprintf(out, "\"bus_voltage_v\":%.3f,\"shunt_voltage_mv\":%.3f,"
+                    "\"current_ma\":%.3f,\"power_mw\":%.3f}\n",
+                    r->mean.voltage_v, r->mean.shunt_mv,
+                    r->mean.current_ma, r->mean.power_mw);
+        else
+            fprintf(out, "\"bus_voltage_v\":null,\"shunt_voltage_mv\":null,"
+                    "\"current_ma\":null,\"power_mw\":null}\n");
+    }
+    free(rows);
+    return ESP_OK;
 }

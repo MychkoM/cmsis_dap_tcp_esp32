@@ -35,7 +35,7 @@ if(CONFIG_ESP_DAP_MANAGE_WIFI)
 endif()
 
 if(CONFIG_ESP_INA219_ENABLED)
-    list(APPEND COMPONENT_SRCS "ina219.c")
+    list(APPEND COMPONENT_SRCS "ina219.c" "ina219_history.c")
 endif()
 
 if(CONFIG_ESP_ADC_STREAM_ENABLED)

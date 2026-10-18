@@ -56,6 +56,10 @@
 #include "commands.h"
 #include "reboot.h"
 
+#ifdef CONFIG_ESP_INA219_ENABLED
+#include "ina219.h"
+#endif
+
 #ifdef CONFIG_ESP_DAP_MANAGE_WIFI
 #include "wifi.h"
 #endif
@@ -564,6 +568,11 @@ void app_main(void)
       ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+#ifdef CONFIG_ESP_INA219_ENABLED
+    if (ina219_monitor_start() != ESP_OK)
+        fprintf(stderr, "Failed to start INA219 averaging task.\n");
+#endif
 
 #ifdef CONFIG_ESP_DAP_SERIAL_CONSOLE_ENABLED
     commands_init_serial();
