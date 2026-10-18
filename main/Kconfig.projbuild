@@ -825,8 +825,9 @@ menu "CMSIS-DAP configuration"
             default n
             help
                 Enables the ina219 command. Uses a dedicated I2C bus.
-                Reserve both pins exclusively for the sensor. The OLED on
-                the ESP32-C3 0.42 inch board shares GPIO5 and stays inactive.
+                Do not share these pins with SWD, JTAG, UART or an activity
+                LED. The ESP32-C3 0.42 inch board shares the I2C bus
+                with its onboard OLED, which stays inactive.
 
         if ESP_INA219_ENABLED
             config ESP_INA219_SDA_PIN
