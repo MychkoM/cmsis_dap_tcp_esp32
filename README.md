@@ -107,12 +107,12 @@ Credentials are stored in NVS rather than in the board preset or Git.
 After obtaining the IP from USB console:
 
 ```sh
-python3 host/check_wifi.py <device-ip> --ina219 10
+python3 host/check_wifi.py <device-ip> --power 10
 nc <device-ip> 4440
 # At the esp32> prompt:
-ina219
+power
 # Scan I2C addresses on the configured pins if a measurement fails:
-ina219 scan
+power scan
 ```
 
 The check validates framed CMSIS-DAP requests, SWD adapter connect/disconnect,
@@ -122,8 +122,8 @@ this check.
 
 ### INA219 current and power monitor
 
-The optional `CONFIG_ESP_INA219_ENABLED` module adds `ina219` to both USB and
-TCP console help. `ina219 scan` lists responding I2C addresses on the configured
+The optional `CONFIG_ESP_INA219_ENABLED` module adds `power` to both USB and
+TCP console help. `power scan` lists responding I2C addresses on the configured
 pins. Each measurement command triggers a fresh bus+shunt conversion and
 returns one JSON record with `bus_voltage_v`, `shunt_voltage_mv`, signed
 `current_ma`, and signed `power_mw` (bus voltage times current).
@@ -145,10 +145,10 @@ keeps the **200 most recent completed intervals** in a RAM ring buffer.
 Configure and read it from either the USB or TCP console:
 
 ```text
-ina219 interval 1000    # Set the averaging interval to 1 second
-ina219 interval         # Show current interval and buffered count
-ina219 history          # Read all retained records, oldest first
-ina219 history 10       # Read the 10 newest records, oldest first
+power interval 1000    # Set the averaging interval to 1 second
+power interval         # Show current interval and buffered count
+power history          # Read all retained records, oldest first
+power history 10       # Read the 10 newest records, oldest first
 ```
 
 Intervals are specified in milliseconds, from 100 to 3600000. Changing the

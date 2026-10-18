@@ -68,7 +68,7 @@ def main():
     parser.add_argument('--dap-port', type=int, default=4441)
     parser.add_argument('--uart-port', type=int, default=4442)
     parser.add_argument('--console-port', type=int, default=4440)
-    parser.add_argument('--ina219', type=int, default=0, metavar='SAMPLES')
+    parser.add_argument('--power', type=int, default=0, metavar='SAMPLES')
     args = parser.parse_args()
     with socket.create_connection((args.host, args.dap_port), timeout=5) as sock:
         for info, label in ((1, 'vendor'), (2, 'product'), (3, 'serial'), (4, 'firmware')):
@@ -107,8 +107,8 @@ def main():
                 raise ValueError('UART TX counter did not advance: ' + after)
             print('UART: TCP connection and TX of', len(payload), 'bytes OK')
             print(after)
-        for _ in range(args.ina219):
-            result = console.command('ina219')
+        for _ in range(args.power):
+            result = console.command('power')
             match = re.search(r'\{"sensor":"INA219"[^\r\n]*\}', result)
             if not match:
                 raise ValueError('INA219 measurement failed: ' + result)

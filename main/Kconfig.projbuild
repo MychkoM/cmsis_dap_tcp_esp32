@@ -824,7 +824,7 @@ menu "CMSIS-DAP configuration"
             bool "Enable INA219 USB/TCP console measurements"
             default n
             help
-                Enables the ina219 command. Uses a dedicated I2C bus.
+                Enables the power command. Uses a dedicated I2C bus.
                 Do not share these pins with SWD, JTAG, UART or an activity
                 LED. The ESP32-C3 0.42 inch board shares the I2C bus
                 with its onboard OLED, which stays inactive.

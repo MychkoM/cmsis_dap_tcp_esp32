@@ -420,7 +420,7 @@ static int adc_cmd_handler(void *context, int argc, char **argv)
 #endif
 
 #ifdef CONFIG_ESP_INA219_ENABLED
-static bool ina219_parse_uint(const char *text, unsigned min, unsigned max,
+static bool power_parse_uint(const char *text, unsigned min, unsigned max,
                               unsigned *value)
 {
     if (!text || !*text)
@@ -439,7 +439,7 @@ static bool ina219_parse_uint(const char *text, unsigned min, unsigned max,
     return true;
 }
 
-static int ina219_cmd_handler(void *context, int argc, char **argv)
+static int power_cmd_handler(void *context, int argc, char **argv)
 {
     struct command_context *ctx = context;
     esp_err_t err;
@@ -451,7 +451,7 @@ static int ina219_cmd_handler(void *context, int argc, char **argv)
     if (strcmp(argv[1], "interval") == 0) {
         if (argc == 2)
             return ina219_print_interval(ctx->out) == ESP_OK ? 0 : 1;
-        if (argc == 3 && ina219_parse_uint(argv[2], INA219_INTERVAL_MIN_MS,
+        if (argc == 3 && power_parse_uint(argv[2], INA219_INTERVAL_MIN_MS,
                                           INA219_INTERVAL_MAX_MS, &value)) {
             err = ina219_set_interval(value);
             if (err == ESP_OK)
@@ -462,10 +462,10 @@ static int ina219_cmd_handler(void *context, int argc, char **argv)
     }
     if (strcmp(argv[1], "history") == 0 && (argc == 2 || argc == 3)) {
         value = INA219_HISTORY_CAPACITY;
-        if (argc == 2 || ina219_parse_uint(argv[2], 1, INA219_HISTORY_CAPACITY, &value))
+        if (argc == 2 || power_parse_uint(argv[2], 1, INA219_HISTORY_CAPACITY, &value))
             return ina219_print_history(ctx->out, value) == ESP_OK ? 0 : 1;
     }
-    fprintf(ctx->out, "Usage: ina219 [scan | interval [100..3600000 ms] | history [1..200]]\n");
+    fprintf(ctx->out, "Usage: power [scan | interval [100..3600000 ms] | history [1..200]]\n");
     return 1;
 }
 #endif
@@ -589,7 +589,7 @@ static int help_cmd_handler(void *context, int argc, char **argv)
            "ADC streaming settings.\n");
 #endif
 #ifdef CONFIG_ESP_INA219_ENABLED
-    fprintf(out, "  ina219 [scan | interval [ms] | history [count]] - Read/configure INA219 (JSON).\n");
+    fprintf(out, "  power [scan | interval [ms] | history [count]] - Read/configure INA219 (JSON).\n");
 #endif
     fprintf(out, "  reboot - Restart the device.\n");
     fprintf(out, "  status - Report network status.\n");
@@ -656,7 +656,7 @@ static const struct {
     int (*func)(void *context, int argc, char **argv);
 } socket_commands[] = {
 #ifdef CONFIG_ESP_INA219_ENABLED
-    { "ina219", ina219_cmd_handler },
+    { "power", power_cmd_handler },
 #endif
 #ifdef CONFIG_ESP_ADC_STREAM_ENABLED
     { "adc",    adc_cmd_handler },
@@ -920,13 +920,13 @@ void commands_init_serial(void)
 #endif
 
 #ifdef CONFIG_ESP_INA219_ENABLED
-    const esp_console_cmd_t ina219_cmd = {
-        .command = "ina219",
+    const esp_console_cmd_t power_cmd = {
+        .command = "power",
         .help = "INA219 sample, scan, interval [ms], history [count] as JSON",
-        .func_w_context = ina219_cmd_handler,
+        .func_w_context = power_cmd_handler,
         .context = ctx,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&ina219_cmd));
+    ESP_ERROR_CHECK(esp_console_cmd_register(&power_cmd));
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
