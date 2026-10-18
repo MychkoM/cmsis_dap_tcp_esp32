@@ -74,14 +74,15 @@ ESP32-C3 board with onboard OLED SDA=GPIO5 and SCL=GPIO6.
 | SWD data | GPIO1 |
 | Target reset (active low) | GPIO2 |
 | UART1 TX / RX | GPIO21 / GPIO20, 115200 8N1 |
-| INA219 SDA / SCL | GPIO4 / GPIO5 |
+| INA219 SDA / SCL | GPIO6 / GPIO5 |
 | TCP console / CMSIS-DAP / UART | 4440 / 4441 / 4442 |
 
 JTAG and activity LED are disabled. GPIO8/9 are boot strapping pins and
 are left unused. GPIO18/19 remain available for native USB Serial/JTAG.
-The onboard OLED is inactive: GPIO5 is reserved for the external INA219
-clock and GPIO6 must remain undriven. This wiring cannot simultaneously
-operate the OLED with its stock I2C connections.
+The OLED driver is disabled. The external INA219 uses SDA=GPIO6 and
+SCL=GPIO5, opposite to the onboard OLED wiring (SDA=GPIO5/SCL=GPIO6).
+This wiring cannot simultaneously operate the OLED with its stock I2C
+connections.
 
 Build with the existing local Podman image (start Podman first):
 
@@ -131,7 +132,7 @@ Simultaneous console clients are serialized. I2C, conversion timeout,
 configuration readback and overflow failures produce an explicit error
 instead of a zero reading.
 
-The preset uses 100 kHz I2C, address `0x40`, SDA=GPIO4 and SCL=GPIO5.
+The preset uses 100 kHz I2C, address `0x40`, SDA=GPIO6 and SCL=GPIO5.
 Connect sensor VCC to 3V3 and GND to GND, with I2C pull-ups to 3V3.
 `CONFIG_ESP_INA219_SHUNT_MILLIOHMS=100` assumes an **R100 (0.1 ohm)** shunt;
 change it if the fitted resistor differs. Address and pins are configurable
