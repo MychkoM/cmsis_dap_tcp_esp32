@@ -111,6 +111,11 @@ The original pinout diagrams for other boards are retained:
 
 ### 3.1. OLED preset pin assignments
 
+![ESP32-C3 development board with 0.42-inch OLED and pin labels](img/esp32c3_oled_042_pinout.png)
+
+The SDA/SCL labels beside GPIO8/9 in the image are not the pins configured
+by this preset. INA219 and the onboard OLED use GPIO5/GPIO6 as listed below.
+
 The source of these assignments is
 [sdkconfig.board_esp32c3_oled_042](sdkconfig.board_esp32c3_oled_042).
 Numbers below identify **GPIOs**, not physical header positions.
