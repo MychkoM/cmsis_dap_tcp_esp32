@@ -29,6 +29,10 @@
 #include "uart_bridge.h"
 #include "reboot.h"
 
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+#include "ota_update.h"
+#endif
+
 #ifdef CONFIG_ESP_INA219_ENABLED
 #include "ina219.h"
 #include "ina219_history.h"
@@ -470,6 +474,28 @@ static int power_cmd_handler(void *context, int argc, char **argv)
 }
 #endif
 
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+static int ota_cmd_handler(void *context, int argc, char **argv)
+{
+    struct command_context *ctx = context;
+    if (argc == 1 || (argc == 2 && strcmp(argv[1], "status") == 0)) {
+        ota_update_print_status(ctx->out);
+        return 0;
+    }
+    if (argc != 3) {
+        fprintf(ctx->out, "Usage: ota [status | <http(s)://URL> <SHA256>]\n");
+        return 1;
+    }
+    esp_err_t err = ota_update_start(argv[1], argv[2]);
+    if (err != ESP_OK) {
+        fprintf(ctx->out, "OTA start failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    fprintf(ctx->out, "OTA started; use 'ota status' for progress. Device reboots on success.\n");
+    return 0;
+}
+#endif
+
 static int reboot_cmd_handler(void *context, int argc, char **argv)
 {
     struct command_context *ctx = context;
@@ -591,6 +617,9 @@ static int help_cmd_handler(void *context, int argc, char **argv)
 #ifdef CONFIG_ESP_INA219_ENABLED
     fprintf(out, "  power [scan | interval [ms] | history [count]] - Read/configure INA219 (JSON).\n");
 #endif
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+    fprintf(out, "  ota [status | <URL> <SHA256>] - Update firmware over Wi-Fi.\n");
+#endif
     fprintf(out, "  reboot - Restart the device.\n");
     fprintf(out, "  status - Report network status.\n");
     return 0;
@@ -655,6 +684,9 @@ static const struct {
     const char *name;
     int (*func)(void *context, int argc, char **argv);
 } socket_commands[] = {
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+    { "ota", ota_cmd_handler },
+#endif
 #ifdef CONFIG_ESP_INA219_ENABLED
     { "power", power_cmd_handler },
 #endif
@@ -927,6 +959,16 @@ void commands_init_serial(void)
         .context = ctx,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&power_cmd));
+#endif
+
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+    const esp_console_cmd_t ota_cmd = {
+        .command = "ota",
+        .help = "OTA status or update from URL with SHA-256",
+        .func_w_context = ota_cmd_handler,
+        .context = ctx,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&ota_cmd));
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));

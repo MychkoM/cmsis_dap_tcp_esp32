@@ -56,6 +56,10 @@
 #include "commands.h"
 #include "reboot.h"
 
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+#include "ota_update.h"
+#endif
+
 #ifdef CONFIG_ESP_INA219_ENABLED
 #include "ina219.h"
 #endif
@@ -508,6 +512,8 @@ static BaseType_t socket_console_task_start(void)
 
 void app_main(void)
 {
+    bool startup_ok = true;
+
     // DAP_Setup() runs in cmsis_dap_tcp_task(), which owns the task-local DAP
     // state used while processing CMSIS-DAP requests.
     printf("CMSIS-DAP TCP running on ESP32\n");
@@ -570,8 +576,10 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
 #ifdef CONFIG_ESP_INA219_ENABLED
-    if (ina219_monitor_start() != ESP_OK)
+    if (ina219_monitor_start() != ESP_OK) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start INA219 averaging task.\n");
+    }
 #endif
 
 #ifdef CONFIG_ESP_DAP_SERIAL_CONSOLE_ENABLED
@@ -589,47 +597,55 @@ void app_main(void)
 #endif
 
     if(cmsis_dap_tcp_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start CMSIS-DAP-TCP task.\n");
     }
 
 #ifdef CONFIG_ESP_DAP_2_ENABLED
     if(cmsis_dap_tcp_2_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start second CMSIS-DAP-TCP task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_DAP_3_ENABLED
     if(cmsis_dap_tcp_3_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start third CMSIS-DAP-TCP task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_UART_BRIDGE_1_ENABLED
     if(uart_bridge_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start UART bridge task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_UART_BRIDGE_2_ENABLED
     if(uart_bridge_2_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start second UART bridge task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_UART_BRIDGE_3_ENABLED
     if(uart_bridge_3_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start third UART bridge task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_ADC_STREAM_ENABLED
     if(adc_stream_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start ADC stream task.\n");
     }
 #endif
 
 #ifdef CONFIG_ESP_DAP_SOCKET_CONSOLE_ENABLED
     if(socket_console_task_start() != pdPASS) {
+        startup_ok = false;
         fprintf(stderr, "Failed to start socket console task.\n");
     }
 #endif
@@ -638,4 +654,10 @@ void app_main(void)
     xTaskCreatePinnedToCore(cpu_usage_task, "cpu_usage", 4096, NULL,
             CPU_USAGE_TASK_PRIO, NULL, tskNO_AFFINITY);
 #endif
+#ifdef CONFIG_ESP_DAP_OTA_ENABLED
+    ota_update_confirm_boot(startup_ok);
+#else
+    (void)startup_ok;
+#endif
+
 }

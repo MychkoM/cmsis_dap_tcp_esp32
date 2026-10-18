@@ -190,6 +190,76 @@ Register scales and triggered conversion settings follow the
 Current is calculated from signed shunt voltage and the physical resistor;
 the INA219 calibration/current/power registers are not used.
 
+## OTA firmware updates
+
+The ESP32-C3 OLED preset enables `CONFIG_ESP_DAP_OTA_ENABLED`, boot rollback,
+and `partitions.ota_4mb.csv`: two 1920 KiB application slots (`ota_0`/`ota_1`)
+and `otadata`. Existing NVS (Wi-Fi settings) and PHY offsets remain unchanged.
+Other board presets can enable OTA after providing a suitable partition table.
+
+**First install:** build and flash once over USB with
+`python3 host/flash_firmware.py --port /dev/cu.usbmodem1101`. This installs the
+new bootloader, table, initial OTA metadata and app. Do not install the first
+OTA-capable version over an old single-app partition layout. The USB flash
+helper uses the generated offsets, including `ota_data_initial.bin`. If reusing
+a pre-OTA build directory, select the custom partition table, enable OTA and
+boot rollback in menuconfig, or configure a fresh build directory; existing
+sdkconfig values take priority over changed board defaults.
+
+**Subsequent updates over Wi-Fi:** build the app, then run:
+
+```sh
+python3 host/ota_update.py 192.168.1.178
+# Or select a specific application image:
+python3 host/ota_update.py 192.168.1.178 --firmware /path/to/app.bin
+```
+
+The helper exposes only the selected image through a temporary local HTTP
+server, calculates its SHA-256, starts the update, and waits for the device
+to reboot into the other slot and confirm the new boot. The server shuts down
+on completion. `--bind <computer-LAN-IP>` and `--port <port>` override automatic
+address/port selection. The device must be able to reach that LAN server.
+Use the application `.bin`, not the bootloader or a merged flash image.
+
+Manual commands from USB or TCP console:
+
+```text
+ota status
+ota http://192.168.1.10:8000/app.bin <64-digit-SHA256>
+```
+
+The SHA-256 argument is mandatory. Downloads run in a separate task, so the
+console can disconnect and other services continue running. `ota status`
+returns progress, error, firmware version, running/boot/next slots and boot
+validation state. Only one update can run at a time. HTTP/HTTPS servers must
+return HTTP 200 and Content-Length; redirects and chunked-only responses are
+rejected. HTTPS uses the ESP-IDF CA certificate bundle and requires a valid
+device clock for certificate checks where enforced by TLS.
+
+Images are written only to the inactive slot. Project metadata, image
+format/chip/revision, length and the expected SHA-256 are checked before
+changing the boot selection. Download or verification failures leave the
+current boot selection unchanged. Bootloader/table/NVS are never updated by
+the OTA command. After startup tasks have been created, an OTA image waits
+10 seconds before confirming its boot; a crash/reset before confirmation
+causes the bootloader to roll back to the previous working slot. This is a
+startup check, not a complete functional self-test of attached hardware.
+
+Use this on a trusted LAN: the existing TCP console is unauthenticated. SHA-256
+binds the download to the supplied bytes; it does not authenticate whoever
+issues the command. A successful update reboots the board, clearing the RAM
+power history and restoring the default averaging interval.
+
+The optional hardware negative test
+`python3 host/check_ota_failures.py <device-ip>` checks malformed requests,
+HTTP errors, invalid/truncated images, SHA mismatch and concurrent updates.
+It overwrites the inactive slot, so run it only when that older slot is no
+longer needed as a rollback copy.
+
+The implementation follows the ESP-IDF
+[OTA API](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/system/ota.html)
+and [HTTP client API](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/protocols/esp_http_client.html).
+
 # Limitations
 
 The software has some limitations:

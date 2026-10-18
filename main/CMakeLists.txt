@@ -17,7 +17,7 @@ endif()
 # Driver dependencies are declared before sdkconfig is available to the
 # component dependency resolver, including the optional INA219 I2C driver.
 set(PRIV_REQUIRES "spi_flash" "esp_driver_gpio" "esp_adc" "esp_app_format"
-    "esp_driver_i2c")
+    "esp_driver_i2c" "app_update" "esp_http_client" "mbedtls")
 
 # esp_wifi unconditional: REQUIRES resolves before sdkconfig is available.
 set(REQUIRES
@@ -32,6 +32,10 @@ endif()
 
 if(CONFIG_ESP_DAP_MANAGE_WIFI)
     list(APPEND COMPONENT_SRCS "wifi.c")
+endif()
+
+if(CONFIG_ESP_DAP_OTA_ENABLED)
+    list(APPEND COMPONENT_SRCS "ota_update.c")
 endif()
 
 if(CONFIG_ESP_INA219_ENABLED)

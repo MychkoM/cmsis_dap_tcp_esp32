@@ -819,6 +819,14 @@ menu "CMSIS-DAP configuration"
 
     endmenu
 
+    config ESP_DAP_OTA_ENABLED
+        bool "Enable console OTA updates (HTTP/HTTPS and SHA-256)"
+        default n
+        help
+            Adds ota status and ota <URL> <SHA256> to USB/TCP consoles.
+            Requires two OTA app slots and an otadata partition. Use only
+            on a trusted network, like the existing console commands.
+
     menu "INA219 power monitor"
         config ESP_INA219_ENABLED
             bool "Enable INA219 USB/TCP console measurements"
