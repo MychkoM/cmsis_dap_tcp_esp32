@@ -482,8 +482,22 @@ static int ota_cmd_handler(void *context, int argc, char **argv)
         ota_update_print_status(ctx->out);
         return 0;
     }
+    if (argc == 4 && strcmp(argv[1], "push") == 0) {
+        if (ctx->transport != COMMAND_TRANSPORT_SOCKET) {
+            fprintf(ctx->out, "push is only available on the TCP console\n");
+            return 1;
+        }
+        char *end = NULL;
+        unsigned long long size = strtoull(argv[2], &end, 10);
+        if (end == argv[2] || *end != '\0' || size == 0) {
+            fprintf(ctx->out, "Usage: ota [status | <http(s)://URL> <SHA256> | push <SIZE> <SHA256>]\n");
+            return 1;
+        }
+        /* ota_push_run() prints its own handshake/verdict lines. */
+        return ota_push_run(ctx->out, fileno(ctx->out), (size_t)size, argv[3]) == ESP_OK ? 0 : 1;
+    }
     if (argc != 3) {
-        fprintf(ctx->out, "Usage: ota [status | <http(s)://URL> <SHA256>]\n");
+        fprintf(ctx->out, "Usage: ota [status | <http(s)://URL> <SHA256> | push <SIZE> <SHA256>]\n");
         return 1;
     }
     esp_err_t err = ota_update_start(argv[1], argv[2]);
@@ -618,7 +632,7 @@ static int help_cmd_handler(void *context, int argc, char **argv)
     fprintf(out, "  power [scan | interval [ms] | history [count]] - Read/configure INA219 (JSON).\n");
 #endif
 #ifdef CONFIG_ESP_DAP_OTA_ENABLED
-    fprintf(out, "  ota [status | <URL> <SHA256>] - Update firmware over Wi-Fi.\n");
+    fprintf(out, "  ota [status | <URL> <SHA256> | push <SIZE> <SHA256>] - Update firmware over Wi-Fi.\n");
 #endif
     fprintf(out, "  reboot - Restart the device.\n");
     fprintf(out, "  status - Report network status.\n");

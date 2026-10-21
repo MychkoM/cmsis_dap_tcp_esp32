@@ -523,6 +523,7 @@ to see the commands enabled in the running firmware.
 | `power history <count>` | Latest 1–200 records | Returned oldest to newest |
 | `ota` or `ota status` | Version, slots, update state, and progress | JSON status |
 | `ota <URL> <SHA256>` | Download and verify a new application | Slot switch and reboot on success |
+| `ota push <SIZE> <SHA256>` | Stream the image raw on this console connection (TCP only) | Same checks; slot switch and reboot on success |
 | `adc <gpio> <output_sps> <averaging> <format>` | Configure the ADC stream | NVS; applied on a new connection |
 | `reboot` | Restart the adapter | RAM history and its interval are lost |
 
@@ -740,7 +741,34 @@ the application.
 ### 10.2. Updating with one command
 
 On an adapter that already has an OTA-compatible layout, build the new app
-and run:
+and run one of the two helpers below.
+
+**Push (recommended; works from any machine that can reach the console):**
+
+```sh
+./host/build_oled_podman.sh
+python host/ota_push.py "$DEVICE_IP"
+```
+
+The [host/ota_push.py](host/ota_push.py) helper streams the image through
+the console connection itself -- no HTTP server and no reachable host are
+needed:
+
+1. Reads the application `.bin`, calculates its SHA-256.
+2. Sends `ota push <SIZE> <SHA256>` on console port 4440.
+3. Waits for `OTA PUSH READY`, then streams the raw bytes.
+4. The device validates the image header, flashes the next OTA slot,
+   verifies the hash, prints `OTA PUSH OK`, and reboots.
+5. On a lost verdict line (the reboot may reset the socket first) the
+   script reconnects and confirms via `ota status`.
+
+The console's line editor reads its input one byte at a time directly from
+the socket, so the stream position after the command line is exactly the
+first payload byte; no framing or escaping is needed. A stalled sender is
+aborted after 60 seconds and the current boot partition is never changed
+until the full image passes every check.
+
+**HTTP (when the build host sits on the same LAN):**
 
 ```sh
 ./host/build_oled_podman.sh
@@ -835,7 +863,7 @@ Example after a successful boot:
 
 | Field | Meaning |
 |---|---|
-| `state` | `idle`, `downloading`, `rebooting`, or `failed` for the current boot |
+| `state` | `idle`, `downloading`, `push`, `rebooting`, or `failed` for the current boot |
 | `error` | Last OTA error name, or `ESP_OK` when none |
 | `bytes`, `total` | Bytes written and expected file size |
 | `version` | Running application version |

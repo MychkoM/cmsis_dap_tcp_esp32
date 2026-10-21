@@ -25,7 +25,7 @@
 
 #define LISTEN_TASK_STACK_SIZE     4096
 #define LISTEN_TASK_PRIORITY       5
-#define CONNECTION_TASK_STACK_SIZE 4096
+#define CONNECTION_TASK_STACK_SIZE 8192   /* must fit ota push: esp_ota_write + PSA */
 #define CONNECTION_TASK_PRIORITY   5
 #define LISTEN_BACKLOG             4
 
