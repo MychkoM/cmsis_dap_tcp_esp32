@@ -452,6 +452,11 @@ static int power_cmd_handler(void *context, int argc, char **argv)
         return ina219_print_sample(ctx->out) == ESP_OK ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "scan") == 0)
         return ina219_scan(ctx->out) == ESP_OK ? 0 : 1;
+    if (argc == 2 && strcmp(argv[1], "zero") == 0)
+        return ina219_zero(ctx->out) == ESP_OK ? 0 : 1;
+    if (strcmp(argv[1], "shunt") == 0 && argc == 3 &&
+        power_parse_uint(argv[2], 1, 100000, &value))
+        return ina219_set_shunt(value, ctx->out) == ESP_OK ? 0 : 1;
     if (strcmp(argv[1], "interval") == 0) {
         if (argc == 2)
             return ina219_print_interval(ctx->out) == ESP_OK ? 0 : 1;
@@ -469,7 +474,7 @@ static int power_cmd_handler(void *context, int argc, char **argv)
         if (argc == 2 || power_parse_uint(argv[2], 1, INA219_HISTORY_CAPACITY, &value))
             return ina219_print_history(ctx->out, value) == ESP_OK ? 0 : 1;
     }
-    fprintf(ctx->out, "Usage: power [scan | interval [100..3600000 ms] | history [1..200]]\n");
+    fprintf(ctx->out, "Usage: power [scan | zero | shunt [1..100000 mOhm] | interval [100..3600000 ms] | history [1..200]]\n");
     return 1;
 }
 #endif
@@ -544,6 +549,11 @@ static int status_cmd_handler(void *context, int argc, char **argv)
     if (netif == NULL) {
         fprintf(out, "WiFi interface not found.\n");
         return 0;
+    }
+
+    const char *hostname = NULL;
+    if (esp_netif_get_hostname(netif, &hostname) == ESP_OK && hostname) {
+        fprintf(out, "Hostname: %s\n", hostname);
     }
 
     bool connected;

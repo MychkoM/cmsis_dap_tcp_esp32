@@ -27,6 +27,7 @@
 #include "lwip/sys.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "driver/gpio.h"
 
 #include "wifi.h"
 #include "reboot.h"
@@ -185,6 +186,21 @@ void wifi_get_status(bool *connected, const char **ssid, int *rssi)
     }
 }
 
+/* The first standard DAP LED shows connection progress before the DAP
+ * task starts. Once an IP is assigned, normal DAP LED control takes over. */
+static void wifi_wait_led(bool waiting)
+{
+#ifdef CONFIG_ESP_DAP_1_LED_STANDARD
+#ifdef CONFIG_ESP_DAP_1_LED_ACTIVE_HIGH
+    int level = waiting ? 1 : 0;
+#else
+    int level = waiting ? 0 : 1;
+#endif
+    gpio_set_level(CONFIG_ESP_DAP_1_GPIO_LED, level);
+    gpio_set_direction(CONFIG_ESP_DAP_1_GPIO_LED, GPIO_MODE_OUTPUT);
+#endif
+}
+
 static void event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
@@ -202,6 +218,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         }
         else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
             wifi_connected = false;
+            wifi_wait_led(true);
             if (service_started) {
                 /* If connection is lost after a network-dependent service
                  * has started, any connected sockets and the server
@@ -227,6 +244,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         printf("IP address: " IPSTR "\n", IP2STR(&event->ip_info.ip));
         wifi_retry_num = 0;
+        wifi_wait_led(false);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
 #ifdef CONFIG_LWIP_IPV6
@@ -243,6 +261,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 
 int wifi_init(void)
 {
+    wifi_wait_led(true);
     wifi_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());

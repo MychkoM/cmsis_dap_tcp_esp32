@@ -6,6 +6,8 @@
 #include "esp_timer.h"
 #include "ina219_history.h"
 #include "driver/i2c_master.h"
+#include "nvs.h"
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -21,6 +23,43 @@ static i2c_master_dev_handle_t device;
 static StaticSemaphore_t lock_storage;
 static SemaphoreHandle_t lock;
 static portMUX_TYPE init_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* Runtime settings persisted in NVS (namespace "ina219"):
+ *   zero_uv    - measured open-circuit shunt offset (input offset), uV
+ *   shunt_mohm - fitted shunt resistance, milliohms
+ * Defaults come from sdkconfig; the console can override both live. */
+static int32_t zero_offset_uv;
+static uint32_t shunt_mohm = CONFIG_ESP_INA219_SHUNT_MILLIOHMS;
+static bool settings_loaded;
+
+static void load_settings(void)
+{
+    if (settings_loaded)
+        return;
+    settings_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("ina219", NVS_READONLY, &h) == ESP_OK) {
+        int64_t v;
+        if (nvs_get_i64(h, "zero_uv", &v) == ESP_OK)
+            zero_offset_uv = (int32_t)v;
+        if (nvs_get_i64(h, "shunt_mohm", &v) == ESP_OK && v >= 1 && v <= 100000)
+            shunt_mohm = (uint32_t)v;
+        nvs_close(h);
+    }
+}
+
+static esp_err_t save_setting(const char *key, int64_t value)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("ina219", NVS_READWRITE, &h);
+    if (err != ESP_OK)
+        return err;
+    err = nvs_set_i64(h, key, value);
+    if (err == ESP_OK)
+        err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
 
 static esp_err_t write_register(uint8_t reg, uint16_t value)
 {
@@ -100,7 +139,8 @@ esp_err_t ina219_scan(FILE *out)
     return err;
 }
 
-static esp_err_t read_sample(struct ina219_sample *sample, FILE *out)
+static esp_err_t read_sample_impl(struct ina219_sample *sample, FILE *out,
+                                  bool corrected)
 {
     if (!take_lock()) {
         if (out) fprintf(out, "INA219 error: busy\n");
@@ -139,9 +179,12 @@ static esp_err_t read_sample(struct ina219_sample *sample, FILE *out)
     if (err == ESP_OK && (bus_raw & 1))
         err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) {
+        load_settings();
         double voltage = (bus_raw >> 3) * 0.004;
         double shunt_mv = (int16_t)shunt_raw * 0.01;
-        double current_ma = shunt_mv * 1000.0 / CONFIG_ESP_INA219_SHUNT_MILLIOHMS;
+        if (corrected)
+            shunt_mv -= zero_offset_uv / 1000.0;
+        double current_ma = shunt_mv * 1000.0 / shunt_mohm;
         *sample = (struct ina219_sample) {voltage, shunt_mv, current_ma,
                                          voltage * current_ma};
     } else if (out) {
@@ -153,6 +196,11 @@ static esp_err_t read_sample(struct ina219_sample *sample, FILE *out)
     return err;
 }
 
+static esp_err_t read_sample(struct ina219_sample *sample, FILE *out)
+{
+    return read_sample_impl(sample, out, true);
+}
+
 esp_err_t ina219_print_sample(FILE *out)
 {
     struct ina219_sample s;
@@ -160,10 +208,75 @@ esp_err_t ina219_print_sample(FILE *out)
     if (err == ESP_OK)
         fprintf(out, "{\"sensor\":\"INA219\",\"address\":%d,\"bus_voltage_v\":%.3f,"
                 "\"shunt_voltage_mv\":%.3f,\"current_ma\":%.3f,\"power_mw\":%.3f,"
-                "\"shunt_milliohms\":%d}\n",
+                "\"shunt_milliohms\":%u,\"zero_offset_uv\":%d}\n",
                 CONFIG_ESP_INA219_ADDRESS, s.voltage_v, s.shunt_mv, s.current_ma,
-                s.power_mw, CONFIG_ESP_INA219_SHUNT_MILLIOHMS);
+                s.power_mw, (unsigned)shunt_mohm, (int)zero_offset_uv);
     return err;
+}
+
+esp_err_t ina219_zero(FILE *out)
+{
+    /* Tare: average the open-circuit shunt voltage and store it as the
+     * zero-current offset. Run while no current flows through the shunt. */
+    const unsigned count = 20;
+    double sum = 0;
+    unsigned good = 0;
+    esp_err_t err = ESP_OK;
+    for (unsigned i = 0; i < count; ++i) {
+        struct ina219_sample s;
+        err = read_sample_impl(&s, NULL, false);
+        if (err == ESP_OK) {
+            sum += s.shunt_mv;
+            ++good;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!good) {
+        if (out) fprintf(out, "INA219 zero error: %s\n", esp_err_to_name(err));
+        return err ? err : ESP_FAIL;
+    }
+    double mean_mv = sum / good;
+    int32_t offset_uv = (int32_t)llround(mean_mv * 1000.0);
+    if (offset_uv > 5000 || offset_uv < -5000) {
+        if (out) fprintf(out, "{\"type\":\"ina219_zero\",\"error\":\"offset out of range\","
+                "\"mean_raw_mv\":%.3f}\n", mean_mv);
+        return ESP_ERR_INVALID_STATE;
+    }
+    err = save_setting("zero_uv", offset_uv);
+    if (err != ESP_OK) {
+        if (out) fprintf(out, "INA219 zero save error: %s\n", esp_err_to_name(err));
+        return err;
+    }
+    if (!take_lock())
+        return ESP_ERR_TIMEOUT;
+    load_settings();
+    zero_offset_uv = offset_uv;
+    xSemaphoreGive(lock);
+    if (out) fprintf(out, "{\"type\":\"ina219_zero\",\"samples\":%u,\"mean_raw_mv\":%.3f,"
+            "\"offset_uv\":%d,\"shunt_mohm\":%u}\n",
+            good, mean_mv, (int)offset_uv, (unsigned)shunt_mohm);
+    return ESP_OK;
+}
+
+esp_err_t ina219_set_shunt(uint32_t milliohms, FILE *out)
+{
+    if (milliohms < 1 || milliohms > 100000) {
+        if (out) fprintf(out, "INA219 shunt error: out of range\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = save_setting("shunt_mohm", (int64_t)milliohms);
+    if (err != ESP_OK) {
+        if (out) fprintf(out, "INA219 shunt save error: %s\n", esp_err_to_name(err));
+        return err;
+    }
+    if (!take_lock())
+        return ESP_ERR_TIMEOUT;
+    load_settings();
+    shunt_mohm = milliohms;
+    xSemaphoreGive(lock);
+    if (out) fprintf(out, "{\"type\":\"ina219_shunt\",\"shunt_mohm\":%u}\n",
+                     (unsigned)milliohms);
+    return ESP_OK;
 }
 
 static struct ina219_history history;
@@ -236,7 +349,9 @@ esp_err_t ina219_print_interval(FILE *out)
     xSemaphoreGive(history_lock);
     fprintf(out, "{\"type\":\"ina219_interval\",\"interval_ms\":%" PRIu32
             ",\"sample_period_ms\":50,\"count\":%u,\"capacity\":200,"
-            "\"timebase\":\"uptime_ms\"}\n", interval_ms, (unsigned)count);
+            "\"shunt_mohm\":%u,\"zero_offset_uv\":%d,\"timebase\":\"uptime_ms\"}\n",
+            interval_ms, (unsigned)count, (unsigned)shunt_mohm,
+            (int)zero_offset_uv);
     return ESP_OK;
 }
 

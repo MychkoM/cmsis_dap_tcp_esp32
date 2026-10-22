@@ -37,7 +37,7 @@
     {
       "name": "board_esp32c3_super_mini",
       "displayName": "ESP32-C3 SuperMini board",
-      "description": "Builds for the ESP32-C3 SuperMini board",
+      "description": "SuperMini JTAG/SWD, INA219 SDA=3/SCL=4 with 470 mOhm shunt, OTA and esp32-dap hostname",
       "binaryDir": "build/build_esp32c3_super_mini",
       "cacheVariables": {
         "IDF_TARGET": "esp32c3",
@@ -70,7 +70,7 @@
     {
       "name": "board_esp32c3_oled_042",
       "displayName": "ESP32-C3 development board with 0.42 inch OLED",
-      "description": "SWD/UART with GPIO4/5 reserved for external INA219; onboard OLED inactive",
+      "description": "SWD/UART with INA219 on SDA=GPIO5/SCL=GPIO6; onboard OLED inactive",
       "binaryDir": "build/build_esp32c3_oled_042",
       "cacheVariables": {
         "IDF_TARGET": "esp32c3",

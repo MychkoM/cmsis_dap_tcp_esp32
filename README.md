@@ -4,10 +4,15 @@ This firmware turns an ESP32 into a network JTAG/SWD adapter for OpenOCD.
 The same Wi-Fi connection provides access to the target board's UART,
 a management console, INA219 measurements, and firmware updates over OTA.
 
-The main configuration in this version is an **ESP32-C3 Development Board
-With 0.42 Inch OLED**, with an external **MCU-219 / INA219** connected to
-**GPIO5 for SDA** and **GPIO6 for SCL**. Other boards and optional interfaces
-are selected through CMake presets and `menuconfig`.
+The current adapter is an **ESP32-C3 SuperMini**, with an external
+**MCU-219 / INA219**, **SDA=GPIO3**, **SCL=GPIO4**, and a **0R47 (470 mΩ)**
+shunt. Its Wi-Fi hostname is **`esp32-dap`**. Both SWD and JTAG are enabled.
+The OLED board remains supported with a different pin assignment.
+Select the correct board through CMake presets and `menuconfig`.
+
+Last checked against source and the local SuperMini setup: **2026-10-22**.
+The observed SuperMini IP was `192.168.1.106` and USB port was `COM9`;
+these are DHCP/host assignments, not firmware constants.
 
 ![CMSIS-DAP TCP overview](img/cmsis_dap_tcp_diagram.svg)
 
@@ -22,7 +27,7 @@ This guide distinguishes three devices:
 
 1. [Features and limitations](#features)
 2. [Boards and presets](#boards)
-3. [ESP32-C3 OLED and INA219 wiring](#wiring)
+3. [SuperMini, OLED, and INA219 wiring](#wiring)
 4. [Quick start](#quick-start)
 5. [Building and configuration](#build)
 6. [USB flashing and backup](#usb-flash)
@@ -45,14 +50,14 @@ This guide distinguishes three devices:
 |---|---|
 | Network SWD/JTAG | CMSIS-DAP over TCP; up to three independent interfaces |
 | Network UART | Up to three UART-to-TCP bridges, subject to available UARTs and GPIOs |
-| Management | The same commands through USB and TCP consoles |
+| Management | Shared USB/TCP commands; raw `ota push` is TCP-only |
 | Wi-Fi | Station connection, DHCP, and settings stored in NVS |
 | INA219 monitoring | Bus voltage, shunt voltage, signed current, and signed power |
 | Averaging | Background sampling every 50 ms with a configurable averaging window |
 | History | A 200-entry RAM ring buffer of completed intervals with timestamps |
-| OTA | HTTP/HTTPS download, mandatory SHA-256, two app slots, and boot rollback |
+| OTA | Direct TCP push or HTTP/HTTPS download, mandatory SHA-256, two app slots, boot rollback |
 | Internal ADC | An optional TCP voltage stream, enabled separately |
-| Indicators | Standard or RGB LEDs on supported boards; disabled in the OLED preset |
+| Indicators | Standard/RGB DAP LEDs; standard LED also indicates Wi-Fi/IP wait; OLED preset disables LEDs |
 
 Current implementation details and limitations:
 
@@ -66,8 +71,11 @@ Current implementation details and limitations:
   Its I2C address may still appear when scanning the shared bus.
 - Power history and its averaging interval are RAM-only. Any restart,
   including an OTA reboot, clears history and restores the 1000 ms interval.
-- There are no commands for INA219 zero-offset calibration, clearing history,
-  or accumulating energy in Wh/mAh. `power history` reports averages, not energy.
+- `power zero` tares the input offset of the shunt amplifier. Run it while no
+  current flows (shunt path open); the offset is subtracted from
+  `shunt_voltage_mv`/`current_ma`/`power_mw` in later readings. Re-run it after
+  reworking the shunt circuit. Clearing history and accumulating energy in
+  Wh/mAh are still not available. `power history` reports averages, not energy.
 - The TCP console and services are unauthenticated and unencrypted. Use a
   trusted LAN. The OTA SHA-256 verifies that the download matches the supplied
   hash; it does not authenticate the person issuing the command.
@@ -88,13 +96,14 @@ All presets are listed in [CMakePresets.json](CMakePresets.json).
 | `board_xiao_esp32c6_alt` | XIAO ESP32-C6 with alternate UART GPIOs | `esp32c6` |
 
 Common defaults are in [sdkconfig.defaults](sdkconfig.defaults); board settings
-are in `sdkconfig.board_*`. INA219 and OTA are enabled in the OLED preset.
+are in `sdkconfig.board_*`. INA219 and OTA are enabled in the OLED and SuperMini presets.
 Having a module in the source tree does not mean it is enabled in every preset.
 
 Each configuration has its own build directory, for example:
 
 ```text
 build/build_esp32c3_oled_042/
+build/build_esp32c3_super_mini/
 build/build_esp32s3_devkit_c1/
 ```
 
@@ -107,9 +116,38 @@ The original pinout diagrams for other boards are retained:
 ![XIAO ESP32-C6](img/xiao_esp32c6_pinout.png)
 
 <a id="wiring"></a>
-## 3. ESP32-C3 OLED and INA219 wiring
+## 3. SuperMini, OLED, and INA219 wiring
 
-### 3.1. OLED preset pin assignments
+### 3.1. Current SuperMini pin assignments
+
+Source: [sdkconfig.board_esp32c3_super_mini](sdkconfig.board_esp32c3_super_mini).
+Numbers are GPIO numbers, not physical header positions.
+
+| Function | SuperMini pin | Connection |
+|---|---|---|
+| SWCLK / JTAG TCK | GPIO6 | Target SWCLK / TCK |
+| SWDIO / JTAG TMS | GPIO5 | Target SWDIO / TMS |
+| nRESET | GPIO7 | Target active-low reset |
+| JTAG TDI | GPIO9 | Target TDI |
+| JTAG TDO | GPIO10 | Target TDO |
+| JTAG nTRST | GPIO2 | Optional target JTAG reset |
+| Activity / Wi-Fi LED | GPIO8 | Built-in LED, active-low |
+| UART1 TX | GPIO21 | Target RX |
+| UART1 RX | GPIO20 | Target TX |
+| INA219 SDA | **GPIO3** | Sensor SDA |
+| INA219 SCL | **GPIO4** | Sensor SCL |
+| INA219 power | 3V3 | Sensor VCC |
+| Common ground | GND | Sensor and target GND |
+| USB D− / D+ | GPIO18 / GPIO19 | Onboard USB connector |
+
+UART defaults to **115200-8-N-1**. For SWD, use GPIO6, GPIO5, common GND,
+and optionally GPIO7 for reset; the JTAG-only pins are not needed.
+The LED turns on when Wi-Fi initialization starts, stays on until DHCP
+assigns IPv4, then turns off and becomes available to DAP commands. Wi-Fi
+loss turns it on again during recovery. This is an application indicator;
+it does not cover the ROM bootloader or USB download mode.
+
+### 3.2. OLED preset pin assignments
 
 ![ESP32-C3 development board with 0.42-inch OLED and pin labels](img/esp32c3_oled_042_pinout.png)
 
@@ -141,14 +179,14 @@ Cross-connect UART signals: adapter TX → target RX, adapter RX ← target TX.
 This is a UART using board logic levels, not an electrical RS-232 interface.
 Devices using different levels require appropriate level conversion.
 
-### 3.2. Sensor and load circuit
+### 3.3. Sensor and load circuit
 
 ```text
 ESP32-C3                  INA219 / MCU-219
 3V3 --------------------- VCC
 GND --------------------- GND
-GPIO5 ------------------- SDA
-GPIO6 ------------------- SCL
+GPIO3 (SuperMini) -------- SDA  [OLED preset: GPIO5]
+GPIO4 (SuperMini) -------- SCL  [OLED preset: GPIO6]
 
 Supply (+) ------- VIN+ [INA219 shunt] VIN- ----- Load (+)
 Supply (-) ------------------------------------ Load (-)
@@ -160,24 +198,27 @@ VCC powers the sensor itself. VIN+/VIN− belong to the measured circuit:
 the load current must flow through the shunt between these terminals.
 Load-side bus voltage is measured at VIN− relative to common GND.
 
-Defaults:
+OLED and SuperMini preset settings:
 
 | Parameter | Value |
 |---|---|
 | I2C frequency | 100 kHz |
 | INA219 address | `0x40` |
-| Shunt resistance | 100 mΩ = 0.1 Ω, marked R100 |
+| Shunt resistance | 470 mΩ = 0.47 Ω, marked 0R47 |
 | Background sampling | Every 50 ms, nominally 20 samples/s |
 | Averaging window | 1000 ms |
 | History capacity | 200 entries |
 
-If the fitted shunt differs, change `CONFIG_ESP_INA219_SHUNT_MILLIOHMS`.
+The generic Kconfig default is still 100 mΩ for an unmodified R100 module;
+both board presets override it to 470 mΩ. If the fitted shunt differs,
+change `CONFIG_ESP_INA219_SHUNT_MILLIOHMS` in the effective build configuration.
 This coefficient determines the calculated current and power. Operating
 limits depend on the INA219, shunt, and module hardware; refer to the
 [TI datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf).
 
-The onboard OLED shares SDA=GPIO5 and SCL=GPIO6. On the tested board,
-a scan detects `0x3C` and `0x40`; the display remains inactive.
+On the OLED board, the onboard display shares SDA=GPIO5 and SCL=GPIO6;
+its scan detects `0x3C` and `0x40`, with the display inactive.
+The current SuperMini scan detects INA219 at `0x40` on GPIO3/GPIO4.
 I2C pull-ups must match the 3.3 V logic supply.
 
 With no load connected, the measurement inputs may float. Nonzero readings
@@ -188,8 +229,9 @@ does not force those readings to zero.
 ## 4. Quick start
 
 Run host shell commands **from the repository root**. Replace the device
-address and USB port with your own values. `192.168.1.178` is an example
-address observed during local tests; DHCP may assign another address.
+address and USB port with your own values. The current SuperMini was observed
+at `192.168.1.106` / `COM9`; the older OLED examples use `192.168.1.178`.
+DHCP and USB enumeration may assign different values.
 
 ### 4.1. Host tools
 
@@ -217,6 +259,36 @@ ADC plotting additionally requires `matplotlib`; the UART PTY helper requires
 `socat`. Shell examples target macOS/Linux.
 
 ### 4.2. Build and install over USB
+
+#### Windows / PowerShell: current SuperMini setup
+
+Run from the repository root. Select an **already installed ESP-IDF 6.0.2**
+image ID or tag from `podman images`; the historical image tag shown above
+may not exist locally. The local working build directory is
+`build/build_supermini_ota`, separate from the preset's default directory.
+
+```powershell
+python -m venv build/flash-venv
+build/flash-venv/Scripts/python.exe -m pip install esptool==4.12.0
+podman images
+$IdfImage = "<IMAGE_ID>"
+podman run --rm --pull=never -v "${PWD}:/project" -w /project $IdfImage bash -c 'cd /project && IDF_PRESET=board_esp32c3_super_mini idf.py -B build/build_supermini_ota -D SDKCONFIG=build/build_supermini_ota/sdkconfig build'
+
+$UsbPort = "COM9"
+build/flash-venv/Scripts/python.exe host/flash_firmware.py --port $UsbPort --build-dir build/build_supermini_ota
+build/flash-venv/Scripts/python.exe -m serial.tools.miniterm $UsbPort 115200
+```
+
+Replace `<IMAGE_ID>` before running the build command. This flash command
+installs the complete bootloader/partition/application set for SuperMini;
+the helper's omitted `--build-dir` default would select the OLED build.
+For later updates, use OTA with this same SuperMini application image:
+
+```powershell
+python -B host/ota_push.py 192.168.1.106 build/build_supermini_ota/cmsis_dap_tcp_esp32.bin
+```
+
+#### macOS/Linux: OLED preset
 
 Start the existing Podman VM if it is stopped, then run:
 
@@ -246,6 +318,12 @@ After reboot, find `IP address:` in the USB log. Then, on the host:
 ```sh
 nc "$DEVICE_IP" 4440
 ```
+
+On Windows, use a TCP terminal connected to the board's IPv4 address on port
+4440, or automate through the Python `Console` class described below.
+The SuperMini hostname is `esp32-dap`; `status` reports it explicitly.
+This firmware does not advertise an mDNS service, so `.local` name resolution
+is not guaranteed. Use the IP from `status` or the router's DHCP lease.
 
 At the `esp32>` prompt:
 
@@ -305,6 +383,11 @@ podman run --rm -it --pull=never \
 USB flashing runs on the host: the Linux VM on macOS does not automatically
 receive access to `/dev/cu.usbmodem1101`.
 
+If a copied build directory refers to another container path or Python
+environment, configure a new build directory with `-B` and a matching
+`-D SDKCONFIG=...`, as in the Windows example. Do not mix cached builds
+from `/workspace/...` and `/project`, or from different ESP-IDF installations.
+
 ### 5.2. Local ESP-IDF installation
 
 Install the tools using the
@@ -338,16 +421,17 @@ on implicit preset selection: the first preset belongs to an ESP32-S3 board.
 was configured before OTA or pin assignments changed, check it in
 `menuconfig` or configure a fresh build using the appropriate board defaults.
 
-Important OLED preset options:
+Important OLED and SuperMini preset options:
 
 | Symbol | Value or purpose |
 |---|---|
 | `CONFIG_ESP_UART_BRIDGE_1_ENABLED` | UART bridge #1 enabled by common defaults |
 | `CONFIG_ESP_UART_BRIDGE_1_TXD_PIN`, `...RXD_PIN` | 21 / 20 |
 | `CONFIG_ESP_INA219_ENABLED` | Enable `power` and background history |
-| `CONFIG_ESP_INA219_SDA_PIN`, `...SCL_PIN` | 5 / 6 |
+| `CONFIG_ESP_INA219_SDA_PIN`, `...SCL_PIN` | SuperMini: 3 / 4; OLED: 5 / 6 |
 | `CONFIG_ESP_INA219_ADDRESS` | `0x40`; configurable from `0x40` to `0x4F` |
-| `CONFIG_ESP_INA219_SHUNT_MILLIOHMS` | 100; configurable from 1 to 10000 mΩ |
+| `CONFIG_ESP_INA219_SHUNT_MILLIOHMS` | 470 in both presets; configurable from 1 to 10000 mΩ |
+| `CONFIG_LWIP_LOCAL_HOSTNAME` | SuperMini: `esp32-dap`; OLED uses the ESP-IDF default |
 | `CONFIG_ESP_DAP_OTA_ENABLED` | Enable the `ota` command |
 | `CONFIG_PARTITION_TABLE_CUSTOM` | Use a custom partition table |
 | `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` | `partitions.ota_4mb.csv` |
@@ -363,7 +447,9 @@ bootloader settings are in their respective ESP-IDF menus.
 
 ### 5.4. Build outputs
 
-For the OLED preset, `build/build_esp32c3_oled_042/` contains:
+The selected build directory contains the files below. The local SuperMini
+build uses `build/build_supermini_ota/`; the standard preset directory is
+`build/build_esp32c3_super_mini/`, and OLED uses `build/build_esp32c3_oled_042/`.
 
 | File | Use |
 |---|---|
@@ -375,9 +461,14 @@ For the OLED preset, `build/build_esp32c3_oled_042/` contains:
 | `flasher_args.json` | Exact files, offsets, and USB flashing parameters |
 | `project_description.json` | Build metadata, including application version |
 
-The application version is derived from the Git state. It is separate from
-CMSIS-DAP firmware version `2.1.2`, returned by DAP_Info. `ota status` and the
-ESP-IDF startup log show the application version.
+The application version is normally derived from Git, with a fallback of `1`
+when Git metadata is unavailable (as in the current container build).
+DAP_Info product firmware version (ID `0x09`), `ota status`, and the ESP-IDF
+startup log use the application version. DAP_Info protocol firmware version
+(ID `0x04`, queried by `check_wifi.py`) remains `2.1.2` for the current build.
+An unchanged version string alone cannot prove
+that a particular image was installed; also check the OTA slot switch and
+boot validation, or compare the startup ELF hash with the build.
 
 <a id="usb-flash"></a>
 ## 6. USB flashing and backup
@@ -404,6 +495,14 @@ python host/flash_firmware.py --port "$USB_PORT" \
 USB installation of the OTA preset also writes `ota_data_initial.bin`.
 This reinitializes boot selection; it is not an ordinary OTA update.
 Use OTA for subsequent updates of an already configured board.
+
+For first installation on an ESP32-C3, do not write the application
+`cmsis_dap_tcp_esp32.bin` at address `0x0`: that address belongs to
+`bootloader.bin`. With the OTA layout, the partition table goes at `0x8000`,
+initial OTA metadata at `0x10000`, and the application at `0x20000`.
+Use `flash_firmware.py` with the selected build directory so the addresses
+come from that build's `flasher_args.json`. Writing the application at `0x0`
+can produce `SHA-256 comparison failed` followed by repeated watchdog resets.
 
 ### 6.1. Back up before changing the layout
 
@@ -434,10 +533,10 @@ as `build/verification/pre-ota-flash.bin`; that file is not part of the reposito
 
 ### 7.1. Services and ports
 
-| Default TCP port | Service | OLED preset state |
+| Default TCP port | Service | SuperMini / OLED preset state |
 |---|---|---|
 | 4440 | Command console | Enabled |
-| 4441 | CMSIS-DAP #1 | SWD enabled |
+| 4441 | CMSIS-DAP #1 | SuperMini: JTAG/SWD; OLED: SWD |
 | 4442 | UART bridge #1 | UART1, 115200-8-N-1 |
 | 4443 / 4445 | CMSIS-DAP #2 / #3 | Disabled |
 | 4444 / 4446 | UART bridge #2 / #3 | Disabled |
@@ -451,9 +550,9 @@ With IPv6 enabled, CMSIS-DAP creates a dual-stack listener. The TCP console,
 UART bridges, and ADC stream use IPv4. The OTA host scripts expect IPv4;
 IPv6 addresses in `status` do not imply IPv6 support in every service.
 
-OTA does not open a separate incoming HTTP port on the ESP32. A console
-command starts the update, and the adapter downloads from the specified
-HTTP/HTTPS server.
+OTA uses console port 4440. `ota push` receives the image directly over that
+TCP connection; `ota <URL> <SHA256>` downloads it from an HTTP/HTTPS server.
+The adapter does not open a separate incoming HTTP port.
 
 ### 7.2. Network configuration
 
@@ -511,13 +610,15 @@ to see the commands enabled in the running firmware.
 | Command | Result | Persistence and application |
 |---|---|---|
 | `help` | List enabled commands | No settings changed |
-| `status` | Network, addresses, interfaces, connections, and UART counters | Current snapshot |
+| `status` | Hostname, network, addresses, interfaces, connections, UART counters | Current snapshot |
 | `wifi "<ssid>" "<password>" [auth_mode]` | Configure Wi-Fi | NVS; applied after `reboot` |
 | `wifi "" ""` | Remove NVS Wi-Fi settings | Build defaults used after reboot |
 | `uart <instance> <baud> <bits> <parity> <stops>` | Configure a UART bridge | NVS and an attempt to apply immediately |
 | `power` | One fresh INA219 reading | Not added to background history |
 | `power scan` | Scan I2C on the configured SDA/SCL pins | No settings changed |
-| `power interval` | Interval, sampling period, and buffered count | JSON status |
+| `power zero` | Tare the zero-current shunt offset from 20 open-circuit samples | NVS (`ina219/zero_uv`); applied to all readings |
+| `power shunt <mOhm>` | Set the fitted shunt resistance at runtime (1–100000) | NVS (`ina219/shunt_mohm`); overrides the build default |
+| `power interval` | Interval, sampling period, buffered count, shunt, offset | JSON status |
 | `power interval <ms>` | Set a 100–3600000 ms averaging window | RAM; a new window starts immediately |
 | `power history` | All retained averages, up to 200 records | Non-destructive read |
 | `power history <count>` | Latest 1–200 records | Returned oldest to newest |
@@ -538,11 +639,14 @@ still describe the sensor type and remain unchanged.
 | Wi-Fi SSID, password, auth mode | NVS | Retained |
 | UART settings configured with `uart` | NVS | Retained |
 | ADC GPIO/rate/averaging/format | NVS, when the module is enabled | Retained |
+| INA219 zero offset (`power zero`) | NVS (`ina219/zero_uv`) | Retained |
+| INA219 shunt resistance (`power shunt`) | NVS (`ina219/shunt_mohm`) | Retained |
 | `power interval` setting | RAM | Restored to 1000 ms |
 | Ring history, sequence, and uptime | RAM | Restart from the beginning |
 | OTA progress and last error | RAM | Reset |
 | OTA slot selection and boot validation | `otadata` | Retained by the bootloader |
 | GPIOs, TCP ports, and INA219 shunt value | Compiled application settings | Changed by rebuilding |
+| Hostname (`CONFIG_LWIP_LOCAL_HOSTNAME`) | Compiled application setting | Changed by rebuilding; not set by `wifi` |
 
 ### 8.1. UART arguments
 
@@ -575,7 +679,7 @@ power
 Example response format, with illustrative values:
 
 ```json
-{"sensor":"INA219","address":64,"bus_voltage_v":3.300,"shunt_voltage_mv":10.000,"current_ma":100.000,"power_mw":330.000,"shunt_milliohms":100}
+{"sensor":"INA219","address":64,"bus_voltage_v":3.300,"shunt_voltage_mv":4.700,"current_ma":10.000,"power_mw":33.000,"shunt_milliohms":470}
 ```
 
 | Field | Unit and meaning |
@@ -642,7 +746,7 @@ interval:
 
 ```json
 {"type":"ina219_history","count":1,"capacity":200,"timebase":"uptime_ms"}
-{"type":"ina219_average","sequence":11,"timestamp_ms":11007,"start_ms":10000,"end_ms":11000,"interval_ms":1000,"samples":20,"errors":0,"bus_voltage_v":3.300,"shunt_voltage_mv":10.000,"current_ma":100.000,"power_mw":330.000}
+{"type":"ina219_average","sequence":11,"timestamp_ms":11007,"start_ms":10000,"end_ms":11000,"interval_ms":1000,"samples":20,"errors":0,"bus_voltage_v":3.300,"shunt_voltage_mv":4.700,"current_ma":10.000,"power_mw":33.000}
 ```
 
 | Record field | Meaning |
@@ -745,6 +849,14 @@ and run one of the two helpers below.
 
 **Push (recommended; works from any machine that can reach the console):**
 
+For the current SuperMini, first build as in section 4.2, then run:
+
+```sh
+python host/ota_push.py 192.168.1.106 build/build_supermini_ota/cmsis_dap_tcp_esp32.bin
+```
+
+For the OLED preset:
+
 ```sh
 ./host/build_oled_podman.sh
 python host/ota_push.py "$DEVICE_IP"
@@ -759,8 +871,22 @@ needed:
 3. Waits for `OTA PUSH READY`, then streams the raw bytes.
 4. The device validates the image header, flashes the next OTA slot,
    verifies the hash, prints `OTA PUSH OK`, and reboots.
-5. On a lost verdict line (the reboot may reset the socket first) the
-   script reconnects and confirms via `ota status`.
+5. If the verdict line is lost, the script attempts to reconnect and read
+   `ota status`. Its fallback accepts either `pending_verify` or `valid`;
+   it does not establish that the expected slot actually changed.
+
+`OTA PUSH OK` means the device verified the received image and selected the
+new boot slot. The helper returns before boot confirmation. After every push,
+reconnect to the console and run `ota status`: `running` and `boot` must match
+the pre-update `next` slot, and `validation` must become `valid` (normally
+after the ten-second startup trial). Then check `status` for
+`Hostname: esp32-dap` on SuperMini and `power` for `"shunt_milliohms":470`.
+Do not treat an unchanged application version `1` as an image identifier.
+
+`ota_push.py` accepts an optional positional firmware path and `--port` for
+the TCP console (default 4440). Without a path, it selects the OLED image;
+always supply the SuperMini path explicitly. The command's raw payload must
+be sent by a script, not pasted into an interactive terminal.
 
 The console's line editor reads its input one byte at a time directly from
 the socket, so the stream position after the command line is exactly the
@@ -769,6 +895,9 @@ aborted after 60 seconds and the current boot partition is never changed
 until the full image passes every check.
 
 **HTTP (when the build host sits on the same LAN):**
+
+These examples use the OLED image. For SuperMini, supply
+`--firmware build/build_supermini_ota/cmsis_dap_tcp_esp32.bin`.
 
 ```sh
 ./host/build_oled_podman.sh
@@ -858,7 +987,7 @@ board, disconnects clients, and clears RAM history.
 Example after a successful boot:
 
 ```json
-{"type":"ota_status","state":"idle","error":"ESP_OK","bytes":0,"total":0,"version":"f860c5a","running":"ota_1","boot":"ota_1","next":"ota_0","slot_size":1966080,"validation":"valid"}
+{"type":"ota_status","state":"idle","error":"ESP_OK","bytes":0,"total":0,"version":"1","running":"ota_1","boot":"ota_1","next":"ota_0","slot_size":1966080,"validation":"valid"}
 ```
 
 | Field | Meaning |
@@ -884,12 +1013,12 @@ Use an OpenOCD build with the **CMSIS-DAP TCP backend**. Support for the USB
 CMSIS-DAP driver alone is insufficient. If `cmsis-dap backend tcp` is not
 recognized, check the capabilities of your OpenOCD build.
 
-Example `cmsis-dap-tcp.cfg` for the OLED preset:
+Example `cmsis-dap-tcp.cfg` for the current SuperMini in SWD mode:
 
 ```tcl
 adapter driver cmsis-dap
 cmsis-dap backend tcp
-cmsis-dap tcp host 192.168.1.178
+cmsis-dap tcp host 192.168.1.106
 cmsis-dap tcp port 4441
 cmsis-dap tcp min_timeout 300
 transport select swd
@@ -898,7 +1027,7 @@ reset_config none
 ```
 
 Here, `reset_config none` demonstrates a setup without a hardware reset line.
-GPIO2 can be connected to target reset; configure OpenOCD according to the
+SuperMini GPIO7 (OLED GPIO2) can be connected to target reset; configure OpenOCD according to the
 target's requirements.
 
 Example for an external STM32F1, using the appropriate target scripts from
@@ -920,6 +1049,11 @@ at a moderate clock speed, then tune it for the wiring and target.
 `adapter speed` is in kHz. Increase `cmsis-dap tcp min_timeout` for unstable
 network connections.
 
+On presets with a standard LED, including SuperMini (active-low GPIO8),
+the first LED stays on while waiting for Wi-Fi and an IPv4 address. It turns
+off once an address is assigned, then returns to normal DAP control.
+Losing the Wi-Fi connection turns it on again during recovery.
+
 On a preset with an activity LED, it can be controlled manually:
 
 ```tcl
@@ -934,7 +1068,7 @@ assignments and JTAG support enabled.
 <a id="uart"></a>
 ## 12. UART over Wi-Fi
 
-TCP port 4442 carries the UART1 byte stream. The OLED preset uses GPIO21 TX
+TCP port 4442 carries the UART1 byte stream. Both SuperMini and OLED use GPIO21 TX
 and GPIO20 RX, initially configured for 115200 baud, eight data bits, no
 parity, and one stop bit. This is raw TCP without Telnet commands or RFC2217
 baud-rate configuration.
@@ -1067,8 +1201,9 @@ The script uses the default console port, 4440.
 
 ### 14.4. OTA
 
-The positive test is performed by `ota_update.py` itself: download, slot
-switch, and transition from `pending_verify` to `valid`.
+The HTTP positive test is performed by `ota_update.py` itself: download,
+slot switch, and transition to `valid`. For direct push, run `ota_push.py`
+and perform the separate post-boot `ota status` checks in section 10.2.
 
 ```sh
 python host/check_ota_failures.py "$DEVICE_IP"
@@ -1081,8 +1216,26 @@ Do not run it if that slot's old image is needed for rollback.
 
 ### 14.5. Hardware verification performed
 
-The following local checks were performed on an ESP32-C3 OLED rev. 0.4 with
-4 MB flash:
+On **2026-10-22**, the local **ESP32-C3 SuperMini rev. 0.4, 4 MB flash**
+was checked as follows:
+
+| Check | SuperMini result |
+|---|---|
+| Initial USB repair on COM9 | Full image set written at correct offsets; hashes verified; boot loop resolved |
+| Wi-Fi settings | Saved in NVS; connected after reboot |
+| Hostname | `status` reports `esp32-dap`; observed IP `192.168.1.106` |
+| INA219 | Scan detects `0x40` on SDA=3/SCL=4; readings report 470 mΩ |
+| Direct TCP OTA | Image transfer, SHA-256 verification, slot switch, reconnect, and `valid` confirmed |
+| Standard LED logic | Firmware built and installed with waiting-for-Wi-Fi/IP indication on GPIO8; no independent optical measurement recorded |
+
+The direct-push invalid-image, wrong-hash, interrupted-transfer, and
+concurrent-update rejection tests were performed earlier on the OLED adapter;
+its boot selection remained unchanged. Those negative tests were not repeated
+on SuperMini. A physical power-cut rollback test was not performed.
+
+The earlier README records the following historical checks on an ESP32-C3
+OLED rev. 0.4 with 4 MB flash; these were not rerun during this documentation
+update:
 
 | Check | Hardware test result |
 |---|---|
@@ -1101,10 +1254,10 @@ UART RX/loopback, external target-memory access, HTTPS transport, or physical
 power removal during OTA. Do not confuse these results with the upstream
 performance measurements below.
 
-Local reports and logs are under `build/verification/` when saved during
-testing. They are not tracked by Git; the main report is `result.txt`.
-Changes in this working copy are saved as local commits without pushing
-to a Git remote.
+Historical reports may be available under `build/verification/` in the
+environment where they were saved; they are not tracked by Git and may be
+absent on another host. Generated build outputs are local artifacts, not
+evidence that every listed hardware test has run on the current board.
 
 <a id="troubleshooting"></a>
 ## 15. Troubleshooting
@@ -1113,14 +1266,18 @@ to a Git remote.
 |---|---|
 | Podman cannot connect to its socket | VM state (`podman machine list`) and whether it has started |
 | Container image not found | Exact image tag; the build script intentionally does not pull |
-| ESP32-S3 builds instead of C3 | Explicitly set `IDF_PRESET=board_esp32c3_oled_042` |
+| ESP32-S3 builds instead of C3 | Set `IDF_PRESET=board_esp32c3_super_mini` or `board_esp32c3_oled_042` explicitly |
+| Build refers to another project/Python path | Use a fresh build directory and matching SDKCONFIG; do not reuse another container's cache |
 | Changed board defaults have no effect | Effective `build/.../sdkconfig` takes precedence; inspect menuconfig |
 | esptool cannot open the USB port | Port name, data-capable cable, and closed miniterm/screen/monitor sessions |
+| `SHA-256 comparison failed` and watchdog boot loop | Check whether the application was written at `0x0`; reinstall the complete set using `flasher_args.json` |
 | Wi-Fi does not connect | SSID, password, and auth mode; NVS credentials override defaults |
 | Device IP changed | USB log or DHCP lease; optionally reserve its address on the router |
+| Router still shows the old hostname | `status` should report `esp32-dap`; DHCP leases or router display names can remain cached |
+| LED remains on | Wi-Fi initialization has not reached IPv4 assignment; inspect SSID/authentication and DHCP through USB |
 | Connection dropped and history is empty | Wi-Fi loss after service startup triggers reboot; history is RAM-only |
 | `power` is not recognized | `CONFIG_ESP_INA219_ENABLED` must be enabled; `ina219` is no longer a command |
-| `power scan` finds no devices | VCC=3V3, common GND, GPIO5 SDA, GPIO6 SCL, contacts, and pull-ups |
+| `power scan` finds no devices | VCC=3V3, common GND, SuperMini SDA=3/SCL=4 or OLED SDA=5/SCL=6, contacts, pull-ups |
 | `0x3C` appears but `0x40` does not | The OLED bus is visible; check external sensor power, wiring, and address |
 | Sensor address differs | Set `CONFIG_ESP_INA219_ADDRESS` and rebuild |
 | Error at `stage=trigger` | I2C write failed; check the address and scan first |
@@ -1135,6 +1292,7 @@ to a Git remote.
 | OTA returns `ESP_ERR_INVALID_SIZE` | HTTP 200, positive Content-Length, and image size within the slot |
 | OTA returns `ESP_ERR_INVALID_RESPONSE` | Header/project mismatch; use this project's application `.bin` |
 | OTA returns `ESP_ERR_INVALID_CRC` | SHA-256 mismatch; hash the exact file being served |
+| `ota push` prints usage | Installed firmware may predate push support; use supported HTTP OTA or install the complete current USB build |
 | OTA cannot download from the host | LAN IP, bind interface, port, firewall, and Wi-Fi client isolation |
 | OTA returns to the old slot | A reset or failed startup occurred before confirmation; inspect the USB log |
 | OpenOCD does not recognize the TCP backend | An OpenOCD build with that backend is required |
@@ -1163,13 +1321,13 @@ are available through USB.
 | [main/uart_bridge.c](main/uart_bridge.c) | UART-to-TCP forwarding, line settings, and counters |
 | [main/ina219.c](main/ina219.c) | INA219 reads, background sampling, status, and history output |
 | [main/ina219_history.c](main/ina219_history.c) | Averaging and the ring buffer without ESP-IDF dependencies |
-| [main/ota_update.c](main/ota_update.c) | HTTP/HTTPS download, SHA-256, slot selection, and boot confirmation |
+| [main/ota_update.c](main/ota_update.c) | TCP push / HTTP(S) download, SHA-256, slot selection, boot confirmation |
 | [main/adc_stream.c](main/adc_stream.c) | Separate ADC1 stream |
 | [main/Kconfig.projbuild](main/Kconfig.projbuild) | Project menuconfig options |
 | [main/idf_component.yml](main/idf_component.yml) | Component Manager dependencies: led_strip and esp_linenoise |
 | [host/](host/) | Build, flash, OTA, verification, UART PTY, and ADC plot helpers |
 | [tests/test_ina219_history.c](tests/test_ina219_history.c) | Native averaging and history tests |
-| [partitions.ota_4mb.csv](partitions.ota_4mb.csv) | OLED preset partition table |
+| [partitions.ota_4mb.csv](partitions.ota_4mb.csv) | SuperMini and OLED OTA partition table |
 
 The current `.gitignore` excludes `build/`, generated sdkconfig files,
 `managed_components/`, `dependencies.lock`, and `.cache/`. Enter personal
@@ -1183,7 +1341,9 @@ and TCP-console tasks. A new OTA image then waits and confirms its boot.
 
 Background sampling, manual measurements, and scans share an I2C lock.
 History uses a separate lock, and network output is sent from a snapshot.
-OTA runs in its own task without retaining a client console pointer.
+HTTP OTA runs in its own task without retaining a client console pointer.
+Direct OTA push runs synchronously in its TCP console connection task;
+other connections can query progress. Both paths share the update lock.
 Each CMSIS-DAP interface owns its task-specific protocol state.
 
 CMSIS-DAP TCP prefixes each command with an eight-byte header. Multibyte
